@@ -1,0 +1,14 @@
+service: "service:svc"
+
+python:
+  packages:
+    - scikit-learn
+    - numpy
+    - pydantic
+
+models:
+  - tep_model:latest
+
+labels:
+  owner: grupo03
+  stage: fase2
