@@ -77,29 +77,23 @@ VARIABLE_UNITS = {
     47: '%', 48: '%', 49: '%', 50: '%', 51: '%'
 }
 
+# Convierte archivos .dat del TEP a CSV con nombres de columnas descriptivos
 def convert_dat_to_csv(input_path, output_path):
-    """
-    Convierte archivos .dat del TEP a CSV con nombres de columnas descriptivos
-    
-    Args:
-        input_path: Ruta al archivo .dat
-        output_path: Ruta de salida para el CSV
-    """
     # Leer archivo .dat (separado por espacios)
     data = pd.read_csv(input_path, sep=r'\s+', header=None)
     
-    print(f"  Archivo: {Path(input_path).name}")
-    print(f"  Dimensiones: {data.shape}")
+    print(f"Archivo: {Path(input_path).name}")
+    print(f"Dimensiones: {data.shape}")
     
     # Verificar que tenga 52 columnas
     if data.shape[1] != 52:
-        print(f"  ⚠ ADVERTENCIA: Se esperaban 52 columnas, encontradas {data.shape[1]}")
+        print(f"Se esperaban 52 columnas, encontradas {data.shape[1]}")
         # Tomar solo las primeras 52 columnas si hay más
         if data.shape[1] > 52:
             data = data.iloc[:, :52]
-            print(f"  → Usando solo las primeras 52 columnas")
+            print(f"Usando solo las primeras 52 columnas")
         else:
-            print(f"  ⚠ No se puede procesar este archivo, tiene menos de 52 columnas")
+            print(f"No se puede procesar este archivo, tiene menos de 52 columnas")
             return None
     
     # Renombrar columnas
@@ -111,32 +105,23 @@ def convert_dat_to_csv(input_path, output_path):
     # Determinar si es normal (d00) o con fallo
     if 'd00' in filename:
         data['fault'] = 0
-        data['fault_type'] = 'Normal'
     elif '_te' in filename:
         # Archivo de testing
         fault_num = int(filename.replace('d', '').replace('_te', ''))
         data['fault'] = fault_num
-        data['fault_type'] = f'Fault_{fault_num}'
     else:
         # Archivo de training
         fault_num = int(filename.replace('d', ''))
         data['fault'] = fault_num
-        data['fault_type'] = f'Fault_{fault_num}'
     
     # Guardar como CSV
     data.to_csv(output_path, index=False)
-    print(f"  ✓ Convertido -> {output_path.name}\n")
+    print(f"Convertido -> {output_path.name}\n")
     
     return data
 
+# Convierte todos los archivos .dat en un directorio
 def convert_all_files(data_dir, output_dir):
-    """
-    Convierte todos los archivos .dat en un directorio
-    
-    Args:
-        data_dir: Directorio con archivos .dat
-        output_dir: Directorio de salida para CSV
-    """
     data_dir = Path(data_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -145,11 +130,10 @@ def convert_all_files(data_dir, output_dir):
     dat_files = list(data_dir.glob('*.dat'))
     
     if not dat_files:
-        print(f"⚠ No se encontraron archivos .dat en {data_dir}")
+        print(f"No se encontraron archivos .dat en {data_dir}")
         return
     
     print(f"Encontrados {len(dat_files)} archivos .dat")
-    print("-" * 60)
     
     success_count = 0
     error_count = 0
@@ -163,21 +147,17 @@ def convert_all_files(data_dir, output_dir):
             else:
                 error_count += 1
         except Exception as e:
-            print(f"  ✗ Error procesando {dat_file.name}: {e}\n")
+            print(f"Error procesando {dat_file.name}: {e}\n")
             error_count += 1
     
-    print("-" * 60)
-    print(f"✓ Conversión completada")
-    print(f"  Exitosos: {success_count}")
-    print(f"  Errores: {error_count}")
-    print(f"  Archivos guardados en: {output_dir}")
+    print(f"Conversión completada")
+    print(f"Exitosos: {success_count}")
+    print(f"Errores: {error_count}")
+    print(f"Archivos guardados en: {output_dir}")
 
 
-
+# Crea un CSV con información sobre todas las variables
 def create_variable_info_csv(output_path='variable_info.csv'):
-    """
-    Crea un CSV con información sobre todas las variables
-    """
     info_data = []
     for idx, name in VARIABLE_NAMES.items():
         var_type = 'Measured (XMEAS)' if idx < 41 else 'Manipulated (XMV)'
@@ -191,16 +171,14 @@ def create_variable_info_csv(output_path='variable_info.csv'):
     
     df_info = pd.DataFrame(info_data)
     df_info.to_csv(output_path, index=False)
-    print(f"✓ Información de variables guardada en: {output_path}")
+    print(f"Información de variables guardada en: {output_path}")
 
 if __name__ == "__main__":
     # Rutas
     DATA_DIR = Path(__file__).parent.parent / 'data' / 'TEP_data'
     OUTPUT_DIR = Path(__file__).parent.parent / 'data' / 'TEP_csv'
     
-    print("="*60)
-    print("CONVERSIÓN DE DATOS TENNESSEE EASTMAN PROCESS")
-    print("="*60)
+    print("CONVERSIÓN DE DATOS TENNESSEE EASTMAN PROCESS\n")
     
     # Convertir todos los archivos
     convert_all_files(DATA_DIR, OUTPUT_DIR)
@@ -208,8 +186,4 @@ if __name__ == "__main__":
     # Crear archivo con información de variables
     create_variable_info_csv(OUTPUT_DIR / 'variable_info.csv')
     
-
-    
-    print("\n" + "="*60)
-    print("PROCESO COMPLETADO")
-    print("="*60)
+    print("\nPROCESO COMPLETADO")
