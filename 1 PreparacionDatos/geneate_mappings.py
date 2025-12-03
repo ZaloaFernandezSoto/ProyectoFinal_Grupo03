@@ -80,43 +80,73 @@ VARIABLE_UNITS = {
 # Convierte archivos .dat del TEP a CSV con nombres de columnas descriptivos
 def convert_dat_to_csv(input_path, output_path):
     # Leer archivo .dat (separado por espacios)
-    data = pd.read_csv(input_path, sep=r'\s+', header=None)
+    try:
+        data = pd.read_csv(input_path, sep=r'\s+', header=None)
+    except Exception as e:
+        print(f"Error leyendo {input_path}: {e}")
+        return None
     
     print(f"Archivo: {Path(input_path).name}")
-    print(f"Dimensiones: {data.shape}")
+    print(f"Dimensiones originales: {data.shape}")
     
-    # Verificar que tenga 52 columnas
+    # Corrección para archivos con formato transpuesto
+    # Si el archivo tiene 52 filas, significa que las variables están en las filas.
+    if data.shape[0] == 52:
+        print("Detectado formato transpuesto (Variables en filas). Transponiendo...")
+        data = data.T
+        print(f"Nuevas dimensiones: {data.shape}")
+    
+    # Verificación de seguridad
     if data.shape[1] != 52:
-        print(f"Se esperaban 52 columnas, encontradas {data.shape[1]}")
-        # Tomar solo las primeras 52 columnas si hay más
-        if data.shape[1] > 52:
-            data = data.iloc[:, :52]
-            print(f"Usando solo las primeras 52 columnas")
-        else:
-            print(f"No se puede procesar este archivo, tiene menos de 52 columnas")
-            return None
-    
+        print(f"ERROR CRÍTICO: Se esperaban 52 columnas después de procesar, encontradas {data.shape[1]}")
+        return None
+
     # Renombrar columnas
     data.columns = [VARIABLE_NAMES[i] for i in range(52)]
     
-    # Extraer información del nombre del archivo
+    # Extraer información del nombre del archivo para etiquetar
     filename = Path(input_path).stem
     
-    # Determinar si es normal (d00) o con fallo
+    # Caso 1: Archivos de Operación Normal (d00 y d00_te)
     if 'd00' in filename:
         data['fault'] = 0
+        data['fault_type'] = 'Normal'
+        
+    # Caso 2: Archivos de Test con Fallos (d01_te ... d21_te)
     elif '_te' in filename:
-        # Archivo de testing
-        fault_num = int(filename.replace('d', '').replace('_te', ''))
+        try:
+            fault_num = int(filename.replace('d', '').replace('_te', ''))
+        except ValueError:
+            print(f"ERROR CRÍTICO: No se pudo extraer el número de fallo de {filename}")
+            return None
+            
+        # Inicializamos todo como el fallo correspondiente
         data['fault'] = fault_num
+        
+        # CORRECCIÓN -> las primeras 160 observaciones son normales
+        if len(data) >= 160:
+            data.iloc[:160, data.columns.get_loc('fault')] = 0
+            print(f"  -> Test set corregido: Primeras 160 filas marcadas como Normal.")
+        
+        data['fault_type'] = data['fault'].apply(lambda x: 'Normal' if x == 0 else f'Fault_{x}')
+
+    # Caso 3: Archivos de Entrenamiento con Fallos (d01 ... d21)
     else:
-        # Archivo de training
-        fault_num = int(filename.replace('d', ''))
+        try:
+            fault_num = int(filename.replace('d', ''))
+        except ValueError:
+            print(f"ERROR CRÍTICO: No se pudo extraer el número de fallo de {filename}")
+            return None
+            
         data['fault'] = fault_num
+        data['fault_type'] = f'Fault_{fault_num}'
     
+    # Añadir columna de identificador de muestra -> permite rastreo en orden temporal
+    data['sample'] = range(1, len(data) + 1)
+
     # Guardar como CSV
     data.to_csv(output_path, index=False)
-    print(f"Convertido -> {output_path.name}\n")
+    print(f"Convertido exitosamente -> {output_path.name}\n")
     
     return data
 
@@ -178,7 +208,7 @@ if __name__ == "__main__":
     DATA_DIR = Path(__file__).parent.parent / 'data' / 'TEP_data'
     OUTPUT_DIR = Path(__file__).parent.parent / 'data' / 'TEP_csv'
     
-    print("CONVERSIÓN DE DATOS TENNESSEE EASTMAN PROCESS\n")
+    print("CONVERSIÓN DE DATOS TENNESSEE EASTMAN PROCESS (CORREGIDA)\n")
     
     # Convertir todos los archivos
     convert_all_files(DATA_DIR, OUTPUT_DIR)
