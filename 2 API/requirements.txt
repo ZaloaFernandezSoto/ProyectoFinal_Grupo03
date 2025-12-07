@@ -1,4 +1,0 @@
-bentoml
-scikit-learn
-numpy
-pydantic
