@@ -8,15 +8,87 @@ import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import tensorflow as tf
+import base64
 
 # =====================================================
 # CONFIGURACIÓN GLOBAL
 # =====================================================
 st.set_page_config(
     page_title="TEP - Detección de Fallos",
-    page_icon="🧪",
+    page_icon="../data/images/eastman.png",
     layout="wide",
 )
+
+st.markdown("""
+    <style>
+
+        /* ---- Tipografía y layout ---- */
+        h1, h2, h3 {
+            font-family: 'Segoe UI', sans-serif;
+            font-weight: 700;
+        }
+
+        p, li {
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 16px;
+        }
+
+        /* ---- Tarjetas KPI ---- */
+        .metric-container {
+            background: #f7f9fc;
+            padding: 18px 25px;
+            border-radius: 12px;
+            border: 1px solid #e3e6ef;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        /* ---- Separadores suaves ---- */
+        hr {
+            border: none;
+            border-top: 1px solid #ddd;
+            margin: 25px 0;
+        }
+
+        /* ---- Tablas ---- */
+        .dataframe {
+            border-radius: 10px !important;
+            overflow: hidden !important;
+        }
+
+    </style>
+    """, unsafe_allow_html=True)
+
+def get_base64_image(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+img_base64 = get_base64_image("../data/images/eastman.png")
+
+def build_fault_color_map(fault_types):
+    """
+    Normal -> verde
+    Fallos -> escala de rojos (más fallos = rojo más claro)
+    """
+    color_map = {
+        "Normal": "#2E7D32"  
+    }
+
+    faults = [f for f in fault_types if f != "Normal"]
+
+    red_scale = [
+        "#C62828", 
+        "#D32F2F",
+        "#E53935",
+        "#EF5350",
+        "#E57373",
+        "#EF9A9A"
+    ]
+
+    for i, fault in enumerate(faults):
+        color_map[fault] = red_scale[min(i, len(red_scale) - 1)]
+
+    return color_map
 
 st.sidebar.title("Navegación")
 page = st.sidebar.radio(
@@ -32,8 +104,8 @@ TEST_SCALED_PATH = "../data/processed/X_test_scaled.csv"
 SCALER_PATH = "../1 PreparacionDatos/tep_scaler.pkl"
 
 BENTOML_BASE_URL = "http://localhost:3000"
-ENDPOINT_RAPIDO = f"{BENTOML_BASE_URL}/predecir_fallo_rapido"
-ENDPOINT_INTELIGENTE = f"{BENTOML_BASE_URL}/predecir_fallo_inteligente"
+ENDPOINT_RF = f"{BENTOML_BASE_URL}/predecir_fallo_rapido"
+ENDPOINT_LSTM = f"{BENTOML_BASE_URL}/predecir_fallo_inteligente"
 ENDPOINT_HEALTH = f"{BENTOML_BASE_URL}/verificar_servidor"
 
 # =====================================================
@@ -95,7 +167,7 @@ FEATURE_COLS: List[str] = [
 ]
 
 # =====================================================
-# CARGA DE DATOS Y SCALER (CACHEADOS)
+# CARGA DE DATOS Y SCALER 
 # =====================================================
 
 @st.cache_data
@@ -129,7 +201,7 @@ def load_scaler():
         return None
 
 # =====================================================
-# FUNCIONES AUXILIARES (ESCALADO)
+# FUNCIONES AUXILIARES DE ESCALADO
 # =====================================================
 
 def inverse_scale_row(row: pd.Series, scaler) -> np.ndarray:
@@ -156,7 +228,7 @@ def inverse_scale_sequence(seq_df: pd.DataFrame, scaler) -> np.ndarray:
     return x
 
 # =====================================================
-# FUNCIONES AUXILIARES (API BENTOML)
+# FUNCIONES AUXILIARES DE LA API BENTOML
 # =====================================================
 
 def _parse_error_response(resp: requests.Response) -> Dict[str, Any]:
@@ -178,7 +250,6 @@ def call_api_rapido(sensores_52: np.ndarray) -> Dict[str, Any]:
     """
     valores = [float(x) for x in sensores_52]
 
-    # Intento 1: formato correcto para tu service.py actual
     payload = {
         "datos": {
             "sensores": valores
@@ -186,14 +257,13 @@ def call_api_rapido(sensores_52: np.ndarray) -> Dict[str, Any]:
     }
 
     try:
-        resp = requests.post(ENDPOINT_RAPIDO, json=payload, timeout=10)
+        resp = requests.post(ENDPOINT_RF, json=payload, timeout=10)
         if resp.status_code == 200:
             return resp.json()
 
-        # Si hay error de validación, intentamos compatibilidad
         if resp.status_code == 400 and "ddatos" in resp.text:
             payload_alt = {"ddatos": valores}
-            resp2 = requests.post(ENDPOINT_RAPIDO, json=payload_alt, timeout=10)
+            resp2 = requests.post(ENDPOINT_RF, json=payload_alt, timeout=10)
             if resp2.status_code == 200:
                 return resp2.json()
             return _parse_error_response(resp2)
@@ -218,17 +288,16 @@ def call_api_inteligente(sensores_52: np.ndarray,
     }
 
     try:
-        resp = requests.post(ENDPOINT_INTELIGENTE, json=payload, timeout=15)
+        resp = requests.post(ENDPOINT_LSTM, json=payload, timeout=15)
         if resp.status_code == 200:
             return resp.json()
 
-        # Compatibilidad por si en algún momento cambia el nombre de campo
         if resp.status_code == 400 and "ddatos" in resp.text:
             payload_alt = {
                 "ddatos": valores,
                 "secuencia_temporal": secuencia_list,
             }
-            resp2 = requests.post(ENDPOINT_INTELIGENTE, json=payload_alt, timeout=15)
+            resp2 = requests.post(ENDPOINT_LSTM, json=payload_alt, timeout=15)
             if resp2.status_code == 200:
                 return resp2.json()
             return _parse_error_response(resp2)
@@ -283,22 +352,42 @@ def interpretar_respuesta(respuesta_api: Dict[str, Any]) -> str:
     )
 
 # =====================================================
-# PÁGINA 1: ANÁLISIS DE DATOS (EDA)
+# ANÁLISIS DE DATOS (EDA)
 # =====================================================
 
 def page_eda():
     st.title("Análisis Exploratorio de Datos (EDA)")
-    st.markdown(
-        """
-        Esta sección permite explorar el dataset del **Tennessee Eastman Process**  
-        de forma interactiva para comprender:
-        - cómo se distribuyen los sensores
-        - cómo cambian bajo distintos fallos
-        - qué sensores están correlacionados
 
-        ---
-        """
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:20px; padding:15px 0;">
+            <img src="data:image/png;base64,{img_base64}" style="height:60px;">
+            <h2 style="margin:0;">Tennessee Eastman Process</h2>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
+    st.markdown("""
+        <div style="
+            background:#eef3ff;
+            padding:18px 25px;
+            border-left: 5px solid #3E66F2;
+            border-radius:8px;
+            margin-bottom:20px;">
+
+        <b>Bienvenido al módulo de Análisis Exploratorio de Datos (EDA) del Tennessee Eastman Process (TEP).</b><br>
+        En esta sección se analiza el comportamiento de los <b>52 sensores del proceso industrial</b>, con el objetivo
+        de comprender la dinámica del sistema y evaluar cómo los distintos tipos de fallo afectan a las variables del proceso.
+
+        <ul>
+        <li><b>Distribución estadística</b> de cada variable para identificar rangos normales y valores atípicos</li>
+        <li><b>Comparación visual</b> entre operación normal y distintos modos de fallo</li>
+        <li><b>Matriz de correlación interactiva</b> para detectar relaciones y sensores redundantes</li>
+        </ul>
+
+        Este análisis sirve como base para la selección de variables y el desarrollo de los modelos de detección de fallos.
+        </div>
+        """, unsafe_allow_html=True)
 
     df = load_eda_data()
     if df is None or df.empty:
@@ -306,30 +395,46 @@ def page_eda():
         return
 
     # =====================================================
-    # 🔹 1. KPI CARDS
+    # 1. KPI CARDS
     # =====================================================
     st.markdown("### Resumen general del dataset")
-
+    n_faults = df["fault"].nunique() if "fault" in df.columns else 0
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Observaciones totales", f"{len(df):,}")
+        st.markdown(f"""
+        <div class="metric-container">
+            <h3>Observaciones totales</h3>
+            <h2>{len(df):,}</h2>
+        </div>
+        """, unsafe_allow_html=True)
+
     with col2:
-        st.metric("Variables del proceso", len(FEATURE_COLS))
+        st.markdown(f"""
+        <div class="metric-container">
+            <h3>Variables del proceso</h3>
+            <h2>{len(FEATURE_COLS)}</h2>
+        </div>
+        """, unsafe_allow_html=True)
+
     with col3:
-        n_faults = df["fault"].nunique() if "fault" in df.columns else 0
-        st.metric("Modos de operación", n_faults)
+        st.markdown(f"""
+        <div class="metric-container">
+            <h3>Modos de operación</h3>
+            <h2>{n_faults}</h2>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("---")
 
     # =====================================================
-    # 🔹 2. VISTA GENERAL
+    # 2. VISTA GENERAL
     # =====================================================
     st.markdown("### Vista general del dataset")
 
     st.dataframe(df.head(), use_container_width=True)
 
     st.download_button(
-        "📥 Descargar dataset completo",
+        "Descargar dataset completo",
         df.to_csv(index=False).encode("utf-8"),
         "EDA_dataset.csv",
         "text/csv"
@@ -338,7 +443,7 @@ def page_eda():
     st.markdown("---")
 
     # =====================================================
-    # 🔹 3. ESTADÍSTICOS DESCRIPTIVOS
+    # 3. ESTADÍSTICOS DESCRIPTIVOS
     # =====================================================
     st.markdown("### Estadísticos descriptivos de los sensores")
 
@@ -348,29 +453,79 @@ def page_eda():
     st.info("**Interpretación**: Busca sensores con alta desviación estándar → suelen ser clave para diagnóstico.")
 
     st.markdown("---")
-
+    
     # =====================================================
-    # 🔹 4. HISTOGRAMA INTERACTIVO
+    # 4. FILTRO POR TIPO DE FALLO
+    # =====================================================
+
+    if "fault" in df.columns:
+        st.markdown("### Filtro por tipo de fallo")
+        # Mapeo bonito para el usuario
+        mapa_fallos = {
+            f: "Operación Normal" if f == 0 else f"Fallo Tipo {f}"
+            for f in sorted(df["fault"].unique())
+        }
+
+        fallos_seleccionados_labels = st.multiselect(
+            "Selecciona modos de operación:",
+            options=list(mapa_fallos.values()),
+            default=["Operación Normal"] if "Operación Normal" in mapa_fallos.values() else None,
+        )
+
+        fallos_seleccionados = [
+            k for k, v in mapa_fallos.items()
+            if v in fallos_seleccionados_labels
+        ]
+
+        df_filtro = df[df["fault"].isin(fallos_seleccionados)] if fallos_seleccionados else df.copy()
+
+        if fallos_seleccionados:
+            df_filtro = df[df["fault"].isin(fallos_seleccionados)]
+        else:
+            df_filtro = df.copy()
+    else:
+        df_filtro = df.copy()
+        
+    st.info(
+            "Este filtro permite seleccionar los modos de operación a analizar. "
+            "Todos los gráficos siguientes se actualizan dinámicamente en función "
+            "de la operación normal y/o los tipos de fallo seleccionados."
+        )
+    
+    # =====================================================
+    # 5. HISTOGRAMA INTERACTIVO
     # =====================================================
     st.markdown("### Histograma interactivo")
-
     col_h1, col_h2 = st.columns(2)
 
     with col_h1:
         sensor_hist = st.selectbox("Selecciona una variable:", FEATURE_COLS, index=0)
 
-    fig_hist = px.histogram(df, x=sensor_hist, nbins=50,
-                            title=f"Distribución de {sensor_hist}",
-                            color_discrete_sequence=["#3E66F2"])
+    fault_types = df_filtro["fault_type"].unique()
+    color_map = build_fault_color_map(fault_types)
 
+    fig_hist = px.histogram(
+        df_filtro,
+        x=sensor_hist,
+        color="fault_type",
+        nbins=40,
+        opacity=0.75,
+        barmode="overlay",
+        color_discrete_map=color_map,
+    )
+    fig_hist.update_layout(yaxis_title="Frecuencia"
     st.plotly_chart(fig_hist, use_container_width=True)
 
-    st.info("**Interpretación**: Mira si la distribución es normal, sesgada o tiene varios picos → puede indicar distintos modos de operación.")
+    st.info(
+        "**Interpretación:** El histograma muestra la distribución de valores del sensor seleccionado "
+        "para los modos de operación elegidos. Permite analizar cambios en la forma, "
+        "dispersión o aparición de valores extremos al comparar operación normal y fallos."
+    )
 
     st.markdown("---")
 
     # =====================================================
-    # 🔹 5. BOXPLOT POR TIPO DE FALLO
+    # 6. BOXPLOT POR TIPO DE FALLO
     # =====================================================
     if "fault_type" in df.columns:
         st.markdown("### Boxplot por Tipo de Fallo")
@@ -380,21 +535,25 @@ def page_eda():
         with col_b1:
             sensor_box = st.selectbox("Variable para boxplot:", FEATURE_COLS)
 
-        df_plot = df.copy()
+        df_plot = df_filtro.copy()
 
         fig_box = px.box(df_plot, x="fault_type", y=sensor_box,
                          title=f"{sensor_box} por tipo de fallo",
                          color="fault_type")
         st.plotly_chart(fig_box, use_container_width=True)
 
-        st.info("**Interpretación**: Si un fallo desplaza la mediana o aumenta la dispersión, ese sensor es un buen indicador del fallo.")
+        st.info(
+            "**Interpretación:** Este boxplot permite comparar directamente el comportamiento del sensor entre "
+            "operación normal y distintos tipos de fallo. Un desplazamiento de la mediana "
+            "o un aumento de la dispersión indica que el sensor es sensible al fallo."
+        )
     else:
         st.warning("El dataset no tiene columna 'fault_type', por lo que no se puede generar el boxplot por fallo.")
 
     st.markdown("---")
 
     # =====================================================
-    # 🔹 6. MATRIZ DE CORRELACIÓN
+    # 7. MATRIZ DE CORRELACIÓN
     # =====================================================
     st.markdown("### Matriz de correlación")
 
@@ -406,7 +565,7 @@ def page_eda():
     )
 
     vars_corr = FEATURE_COLS[:num_vars]
-    corr = df[vars_corr].corr()
+    corr = df_filtro[vars_corr].corr()
 
     fig_corr = px.imshow(
         corr,
@@ -417,128 +576,175 @@ def page_eda():
     )
     st.plotly_chart(fig_corr, use_container_width=True)
 
-    st.info("**Interpretación:** Correlaciones altas (>0.8) indican sensores redundantes. Valores negativos fuertes indican relación inversa real del proceso.")
+    st.info(
+        "**Interpretación:** La matriz de correlación muestra las relaciones entre los sensores del proceso "
+        "para los modos de operación seleccionados. Correlaciones altas indican sensores "
+        "redundantes, mientras que correlaciones negativas fuertes reflejan relaciones "
+        "inversas propias de la dinámica del proceso."
+    )
 
 # =====================================================
-# PÁGINA 2: ENTRENAMIENTO (RESUMEN)
+# ENTRENAMIENTO (RESUMEN)
 # =====================================================
 
 def page_training():
-    import json
-
     st.title("Resultados de Entrenamiento")
 
     st.markdown("""
-    Esta sección resume el rendimiento de los modelos entrenados durante la **Fase 1**  
-    (Random Forest y LSTM). Las métricas se cargan automáticamente desde los archivos JSON
-    generados durante el entrenamiento.
-    """)
+        <div style="
+            background:#eef3ff;
+            padding:18px 25px;
+            border-left: 5px solid #3E66F2;
+            border-radius:8px;
+            margin-bottom:20px;">
 
-    # Rutas de los JSON
-    RF_METRICS = "../1 PreparacionDatos/metrics_rf.json"
-    LSTM_METRICS = "../1 PreparacionDatos/metrics_lstm.json"
+        En esta sección se evalúa el rendimiento de los modelos entrenados durante la <b>Fase 1</b> 
+        (Random Forest y LSTM) utilizando el conjunto de test.  
+        Las métricas mostradas permiten comparar un modelo rápido basado en variables instantáneas
+        con un modelo secuencial que captura la dinámica temporal del proceso.
 
-    # Cargar métricas
-    def load_metrics(path):
-        if os.path.exists(path):
-            with open(path, "r") as f:
-                return json.load(f)
-        return None
+        </div>
+        """, unsafe_allow_html=True)
 
-    metrics_rf = load_metrics(RF_METRICS)
-    metrics_lstm = load_metrics(LSTM_METRICS)
+    # Rutas
+    RF_MODEL_PATH = "../1 PreparacionDatos/tep_rf_model_optimized.pkl"
+    LSTM_MODEL_PATH = "../1 PreparacionDatos/tep_lstm_model.keras"
+    X_TEST_PATH = "../data/processed/X_test_scaled.csv"
+    Y_TEST_PATH = "../data/processed/y_test.csv"
 
-    st.markdown("## Métricas de los Modelos")
+    # Cargar datos
+    X_test = pd.read_csv(X_TEST_PATH)
+    y_test = pd.read_csv(Y_TEST_PATH).values.ravel()
 
+    # ---------- RANDOM FOREST ----------
+    rf_model = joblib.load(RF_MODEL_PATH)
+    y_pred_rf = rf_model.predict(X_test)
+
+    rf_metrics = {
+        "accuracy": accuracy_score(y_test, y_pred_rf),
+        "precision": precision_score(y_test, y_pred_rf, average="weighted"),
+        "recall": recall_score(y_test, y_pred_rf, average="weighted"),
+        "f1": f1_score(y_test, y_pred_rf, average="weighted"),
+    }
+
+    # ---------- LSTM ----------
+    lstm_model = tf.keras.models.load_model(LSTM_MODEL_PATH)
+
+    X_seq = []
+    y_seq = []
+    for i in range(9, len(X_test)):
+        X_seq.append(X_test.iloc[i-9:i+1].values)
+        y_seq.append(y_test[i])
+
+    X_seq = np.array(X_seq)
+    y_seq = np.array(y_seq)
+
+    y_pred_lstm = np.argmax(lstm_model.predict(X_seq), axis=1)
+
+    lstm_metrics = {
+        "accuracy": accuracy_score(y_seq, y_pred_lstm),
+        "precision": precision_score(y_seq, y_pred_lstm, average="weighted"),
+        "recall": recall_score(y_seq, y_pred_lstm, average="weighted"),
+        "f1": f1_score(y_seq, y_pred_lstm, average="weighted"),
+    }
+
+    # ---------- VISUALIZACIÓN ----------
     col1, col2 = st.columns(2)
 
-    # ---------------- RANDOM FOREST ----------------
     with col1:
-        st.markdown("### Modelo Rápido: Random Forest")
+        st.markdown("### Random Forest")
+        st.caption("Modelo basado en variables instantáneas, optimizado para detección rápida de fallos.")
+        st.metric("Accuracy", f"{rf_metrics['accuracy']:.3f}")
+        st.metric("Precision", f"{rf_metrics['precision']:.3f}")
+        st.metric("Recall", f"{rf_metrics['recall']:.3f}")
+        st.metric("F1-Score", f"{rf_metrics['f1']:.3f}")
 
-        if metrics_rf:
-            st.success("Métricas cargadas correctamente.")
-
-            st.metric("Accuracy", f"{metrics_rf['accuracy']:.3f}")
-            st.metric("Precision", f"{metrics_rf['precision']:.3f}")
-            st.metric("Recall", f"{metrics_rf['recall']:.3f}")
-            st.metric("F1-Score", f"{metrics_rf['f1_score']:.3f}")
-
-        else:
-            st.error("No se encontró `metrics_rf.json`")
-            st.info("Ejecuta el script de generación de métricas para crearlo.")
-
-    # ---------------- LSTM ----------------
     with col2:
-        st.markdown("### Modelo Secuencial: LSTM")
-
-        if metrics_lstm:
-            st.success("Métricas cargadas correctamente.")
-
-            st.metric("Accuracy", f"{metrics_lstm['accuracy']:.3f}")
-            st.metric("Precision", f"{metrics_lstm['precision']:.3f}")
-            st.metric("Recall", f"{metrics_lstm['recall']:.3f}")
-            st.metric("F1-Score", f"{metrics_lstm['f1_score']:.3f}")
-
-        else:
-            st.error("No se encontró `metrics_lstm.json`")
-            st.info("Ejecuta el script de generación de métricas para crearlo.")
-
-    # ---------------- Health Check ----------------
-
-    st.markdown("---")
-    st.subheader("Health Check de la API BentoML")
-
-    if st.button("Verificar estado del servidor"):
-        estado = call_healthcheck()
-        st.json(estado)
+        st.markdown("### LSTM")
+        st.caption("Modelo secuencial que utiliza ventanas temporales para capturar la evolución del proceso.")
+        st.metric("Accuracy", f"{lstm_metrics['accuracy']:.3f}")
+        st.metric("Precision", f"{lstm_metrics['precision']:.3f}")
+        st.metric("Recall", f"{lstm_metrics['recall']:.3f}")
+        st.metric("F1-Score", f"{lstm_metrics['f1']:.3f}")
 
 
 # =====================================================
-# PÁGINA 3: MONITORIZACIÓN EN TIEMPO REAL
+# MONITORIZACIÓN EN TIEMPO REAL
 # =====================================================
 
 def init_session_state():
     if "current_index" not in st.session_state:
         st.session_state["current_index"] = 0
     if "prediction_log" not in st.session_state:
-        st.session_state["prediction_log"] = []  # lista de dicts
+        st.session_state["prediction_log"] = []  
+    if "auto_analyze" not in st.session_state:
+        st.session_state["auto_analyze"] = False
 
 
 def page_monitoring():
     st.title("Monitorización en Tiempo Real")
 
     df_test = load_test_scaled()
-    scaler = load_scaler()
+    # scaler = load_scaler()
     if df_test is None or df_test.empty:
         return
 
     init_session_state()
 
-    st.markdown(
-        """
-        Esta pestaña simula la llegada de datos del **Tennessee Eastman Process** cada **3 minutos** 
-        usando las filas de `X_test_scaled`:
+    st.markdown("""
+        <div style="
+            background:#eef3ff;
+            padding:18px 25px;
+            border-left: 5px solid #3E66F2;
+            border-radius:8px;
+            margin-bottom:20px;">
+            
+        En esta sección se simula un sistema de <b>detección de fallos en tiempo real</b> para el 
+        Tennessee Eastman Process (TEP).  
+        Cada observación representa una nueva lectura del proceso y se envía a un servicio 
+        desplegado con BentoML para evaluar el estado del sistema.
 
-        1. Se toma una fila de `X_test_scaled` como si fuera una nueva lectura del proceso.  
-        2. Si hay *scaler*, se des-normalizan los 52 sensores para mandarlos a la API.  
-        3. Se envían al servicio BentoML:  
-           - `predecir_fallo_rapido` → Random Forest (rápido).  
-           - `predecir_fallo_inteligente` → LSTM (usa una ventana de 10 pasos).
-        """
+        El usuario puede seleccionar el modelo de predicción y analizar si el proceso se encuentra 
+        en operación normal o si se detecta un fallo específico.
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.subheader("Estado del servicio de predicción")
+    st.caption(
+        "Se comprueba la disponibilidad del servicio BentoML encargado de realizar las predicciones."
     )
+    if st.button("Comprobar estado del servidor"):
+        try:
+            estado = call_healthcheck()
+            if isinstance(estado, dict) and "status" in estado:
+                if estado.get("status", "").upper() in ["OK", "OPERATIVO"]:
+                    st.success("✅ Servidor activo y funcionando correctamente.")
+                else:
+                    st.warning("⚠️ Servidor activo, pero la respuesta no es la esperada.")
+                    st.json(estado)
+            else:
+                st.warning("⚠️ Servidor activo, pero formato de respuesta inesperado.")
+                st.json(estado)
+        except Exception as e:
+            st.error("❌ No se pudo conectar con el servicio BentoML.")
+            st.code(str(e))
 
+    st.markdown("---")
+    st.subheader("Selección del modelo de predicción")
     modo = st.radio(
-        "Modo de predicción:",
-        ("Predicción rápida (Random Forest)", "Predicción inteligente (LSTM)"),
-        horizontal=True,
+        "Elige el modelo que realizará la predicción:",
+        (
+            "Predicción rápida (Random Forest)",
+            "Predicción inteligente (LSTM)"
+        )
     )
 
+    st.markdown("---")
     col_left, col_right = st.columns([2, 1])
 
-    # -------------------- LADO IZQUIERDO: LECTURA ACTUAL --------------------
+    # -------------------- LECTURA ACTUAL --------------------
     with col_left:
-        st.subheader("Lectura actual (normalizada de X_test_scaled)")
+        st.subheader("Lectura actual")
 
         idx = st.session_state["current_index"]
         if idx >= len(df_test):
@@ -549,46 +755,46 @@ def page_monitoring():
         st.dataframe(fila_actual.to_frame().T)
 
         if st.button("🔁 Simular nueva lectura (3 minutos después)"):
-            st.session_state["current_index"] = (idx + 1) % len(df_test)
-            # en un sistema real serían 180s; aquí solo recargamos la página
+            STEP = 50 
+            st.session_state["current_index"] = (idx + STEP) % len(df_test)
+            st.session_state["auto_analyze"] = True
             st.rerun()
 
-    # -------------------- LADO DERECHO: PREDICCIÓN --------------------
+    # -------------------- PREDICCIÓN --------------------
     with col_right:
         st.subheader("Predicción del estado")
 
-        if st.button(" Analizar estado actual"):
+        analyze_clicked = st.button(" Analizar estado actual")
+        if analyze_clicked or st.session_state.get("auto_analyze", False):
+            st.session_state["auto_analyze"] = False
+
             idx = st.session_state["current_index"]
             fila_actual = df_test.iloc[idx]
 
-            # 1) Des-normalizar la fila
-            sensores_raw = inverse_scale_row(fila_actual, scaler)
+            sensores_scaled = fila_actual[FEATURE_COLS].values.astype(float)
 
-            # 2) Llamar al modelo escogido
             if modo.startswith("Predicción rápida"):
                 with st.spinner("Llamando a predecir_fallo_rapido..."):
-                    respuesta = call_api_rapido(sensores_raw)
+                    respuesta = call_api_rapido(sensores_scaled)
+
             else:
-                # Construimos secuencia de 10 pasos
                 inicio = max(0, idx - 9)
                 fin = idx + 1
                 seq_df = df_test.iloc[inicio:fin]
 
                 if len(seq_df) < 10:
-                    primera = seq_df.iloc[0:1]
+                    primera = seq_df.iloc[0]
                     faltan = 10 - len(seq_df)
-                    seq_df = pd.concat([primera] * faltan + [seq_df], ignore_index=True)
+                    seq_df = pd.concat([pd.DataFrame([primera] * faltan), seq_df], ignore_index=True)
 
-                secuencia_raw = inverse_scale_sequence(seq_df, scaler)
+                secuencia_scaled = seq_df[FEATURE_COLS].values.astype(float)
 
                 with st.spinner("Llamando a predecir_fallo_inteligente (LSTM)..."):
-                    respuesta = call_api_inteligente(sensores_raw, secuencia_raw)
+                    respuesta = call_api_inteligente(sensores_scaled, secuencia_scaled)
 
-            # 3) Mostrar resultado en formato "semáforo"
             st.markdown("### Resultado")
             st.markdown(interpretar_respuesta(respuesta))
 
-            # 4) Guardar en log si no es error
             if respuesta and "error" not in respuesta:
                 st.session_state["prediction_log"].append(
                     {
@@ -606,7 +812,7 @@ def page_monitoring():
 
     # -------------------- HISTORIAL DE PREDICCIONES --------------------
     st.markdown("---")
-    st.subheader("Historial de predicciones (sesión actual)")
+    st.subheader("Historial de predicciones")
 
     if st.session_state["prediction_log"]:
         log_df = pd.DataFrame(st.session_state["prediction_log"])

@@ -1,7 +1,6 @@
 import pandas as pd
 import os
 
-# Carpeta donde están los CSV generados a partir de los .dat
 BASE_PATH = "../data/TEP_csv/"
 
 # d00 → normal, d01 → fallo 1 ... d21 → fallo 21
