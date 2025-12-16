@@ -292,6 +292,3 @@ class DetectorFallos:
         logger.info(f"Health Check: {estado}")
         
         return estado
-    
-
-svc = DetectorFallos()
